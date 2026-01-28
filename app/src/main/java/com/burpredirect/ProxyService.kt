@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.os.Binder
+import android.os.Build
 import android.os.IBinder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +46,33 @@ class ProxyService : Service() {
         }
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> {
+                val ip = intent.getStringExtra(EXTRA_IP) ?: return START_NOT_STICKY
+                val port = intent.getIntExtra(EXTRA_PORT, 8080)
+                startForeground(NOTIFICATION_ID, createNotification(ip, port))
+                scope.launch {
+                    val result = IptablesManager.enableProxy(ip, port)
+                    if (result.isSuccess) {
+                        _isActive.value = true
+                        _currentIp.value = ip
+                        _currentPort.value = port
+                    }
+                }
+            }
+            ACTION_STOP -> {
+                scope.launch {
+                    IptablesManager.disableProxy()
+                    _isActive.value = false
+                }
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         scope.cancel()
@@ -68,6 +97,7 @@ class ProxyService : Service() {
             if (result.isSuccess) {
                 _isActive.value = false
                 stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
             }
             onResult(result)
         }
@@ -104,5 +134,29 @@ class ProxyService : Service() {
     companion object {
         const val CHANNEL_ID = "proxy_status"
         const val NOTIFICATION_ID = 1
+        const val ACTION_START = "com.burpredirect.START"
+        const val ACTION_STOP = "com.burpredirect.STOP"
+        const val EXTRA_IP = "ip"
+        const val EXTRA_PORT = "port"
+
+        fun start(context: Context, ip: String, port: Int) {
+            val intent = Intent(context, ProxyService::class.java).apply {
+                action = ACTION_START
+                putExtra(EXTRA_IP, ip)
+                putExtra(EXTRA_PORT, port)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun stop(context: Context) {
+            val intent = Intent(context, ProxyService::class.java).apply {
+                action = ACTION_STOP
+            }
+            context.startService(intent)
+        }
     }
 }

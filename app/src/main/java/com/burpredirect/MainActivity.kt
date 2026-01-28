@@ -81,7 +81,6 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     ProxyScreen(
-                        getService = { proxyService },
                         bindService = {
                             bindService(Intent(this, ProxyService::class.java), connection, Context.BIND_AUTO_CREATE)
                         },
@@ -113,7 +112,6 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun ProxyScreen(
-    getService: () -> ProxyService?,
     bindService: () -> Unit,
     unbindService: () -> Unit
 ) {
@@ -126,15 +124,16 @@ fun ProxyScreen(
 
     var ip by remember(savedIp) { mutableStateOf(savedIp) }
     var port by remember(savedPort) { mutableStateOf(savedPort.toString()) }
-    var isActive by remember { mutableStateOf(false) }
+    var isActive by remember { mutableStateOf<Boolean?>(null) }
     var status by remember { mutableStateOf("Checking...") }
     var error by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(Unit) {
         bindService()
         scope.launch {
-            isActive = IptablesManager.isProxyActive()
-            status = if (isActive) "Active" else "Inactive"
+            val active = IptablesManager.isProxyActive()
+            isActive = active
+            status = if (active) "Active" else "Inactive"
         }
         onDispose { unbindService() }
     }
@@ -158,7 +157,7 @@ fun ProxyScreen(
             label = { Text("Burp Suite IP") },
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
-            enabled = !isActive
+            enabled = isActive == false
         )
 
         Spacer(modifier = Modifier.height(16.dp))
@@ -170,7 +169,7 @@ fun ProxyScreen(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            enabled = !isActive
+            enabled = isActive == false
         )
 
         Spacer(modifier = Modifier.height(32.dp))
@@ -178,7 +177,7 @@ fun ProxyScreen(
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
-                containerColor = if (isActive) Color(0xFF4CAF50) else MaterialTheme.colorScheme.surfaceVariant
+                containerColor = if (isActive == true) Color(0xFF4CAF50) else MaterialTheme.colorScheme.surfaceVariant
             )
         ) {
             Column(
@@ -188,22 +187,17 @@ fun ProxyScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = if (isActive) "Proxy Enabled" else "Proxy Disabled",
+                    text = if (isActive == true) "Proxy Enabled" else "Proxy Disabled",
                     style = MaterialTheme.typography.titleMedium,
-                    color = if (isActive) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                    color = if (isActive == true) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Switch(
-                    checked = isActive,
+                    checked = isActive == true,
+                    enabled = isActive != null,
                     onCheckedChange = { enabled ->
-                        val service = getService()
-                        if (service == null) {
-                            error = "Service not available"
-                            return@Switch
-                        }
-
                         val portInt = port.toIntOrNull() ?: 8080
                         error = null
 
@@ -212,25 +206,21 @@ fun ProxyScreen(
                             scope.launch {
                                 prefs.saveSettings(ip, portInt)
                             }
-                            service.enableProxy(ip, portInt) { result ->
-                                result.onSuccess {
-                                    isActive = true
-                                    status = "Active"
-                                }.onFailure { e ->
-                                    error = e.message ?: "Failed to enable"
-                                    status = "Error"
-                                }
+                            ProxyService.start(context, ip, portInt)
+                            scope.launch {
+                                kotlinx.coroutines.delay(500)
+                                val active = IptablesManager.isProxyActive()
+                                isActive = active
+                                status = if (active) "Active" else "Error"
                             }
                         } else {
                             status = "Disabling..."
-                            service.disableProxy { result ->
-                                result.onSuccess {
-                                    isActive = false
-                                    status = "Inactive"
-                                }.onFailure { e ->
-                                    error = e.message ?: "Failed to disable"
-                                    status = "Error"
-                                }
+                            ProxyService.stop(context)
+                            scope.launch {
+                                kotlinx.coroutines.delay(500)
+                                val active = IptablesManager.isProxyActive()
+                                isActive = active
+                                status = if (!active) "Inactive" else "Error"
                             }
                         }
                     }
@@ -245,7 +235,7 @@ fun ProxyScreen(
             style = MaterialTheme.typography.bodyLarge
         )
 
-        if (isActive) {
+        if (isActive == true) {
             Text(
                 text = "Redirecting 80, 443 → $ip:$port",
                 style = MaterialTheme.typography.bodyMedium,
