@@ -47,7 +47,19 @@ class ProxyService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        when (intent?.action) {
+        // If the system re-delivers a null intent (MIUI autostart, OOM restart, etc.)
+        // or flags indicate a restart, clean up iptables and stop immediately.
+        // The proxy should ONLY activate from an explicit user action.
+        if (intent == null || (flags and START_FLAG_REDELIVERY) != 0) {
+            scope.launch {
+                IptablesManager.disableProxy()
+                _isActive.value = false
+            }
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        when (intent.action) {
             ACTION_START -> {
                 val ip = intent.getStringExtra(EXTRA_IP) ?: return START_NOT_STICKY
                 val port = intent.getIntExtra(EXTRA_PORT, 8080)
@@ -69,12 +81,30 @@ class ProxyService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
+            else -> {
+                // Unknown action — don't enable anything, just stop
+                stopSelf()
+            }
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        // Clean up iptables rules when service is destroyed to prevent
+        // stale DNAT rules from persisting and breaking connectivity.
+        // Use a daemon thread to avoid ANR from runBlocking on main thread.
+        Thread {
+            try {
+                val process = Runtime.getRuntime().exec("su")
+                java.io.DataOutputStream(process.outputStream).use { os ->
+                    os.writeBytes("iptables -t nat -F OUTPUT\n")
+                    os.writeBytes("exit\n")
+                    os.flush()
+                }
+                process.waitFor()
+            } catch (_: Exception) { }
+        }.apply { isDaemon = true }.start()
         scope.cancel()
     }
 

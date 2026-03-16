@@ -31,6 +31,26 @@ object IptablesManager {
         }
     }
 
+    suspend fun resetAll(): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val commands = listOf(
+                "iptables -F",
+                "iptables -X",
+                "iptables -t nat -F",
+                "iptables -t nat -X",
+                "iptables -t mangle -F",
+                "iptables -t mangle -X",
+                "iptables -P INPUT ACCEPT",
+                "iptables -P FORWARD ACCEPT",
+                "iptables -P OUTPUT ACCEPT"
+            )
+            executeAsRoot(commands)
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun isProxyActive(): Boolean = withContext(Dispatchers.IO) {
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "iptables -t nat -L OUTPUT -n"))
